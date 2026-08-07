@@ -9,9 +9,54 @@ import snapshotting.logger as logger
 import snapshotting.boundary as boundary
 from analysis.error_clusters import compute_error_clusters
 from analysis.feature_importance import compute_feature_importance
-from presets import standard
+from analysis.forgetting import forgetting_events
+from presets import standard, continual
 from training.mlp_harness import train_mlp, predict as mlp_predict
 from training.rf_harness import train_random_forest
+
+
+def build_continual_snapshot_payload(
+    phase_holdouts,
+    model,
+    predict_fn,
+    phase_index,
+    pca=None,
+    xx=None,
+    grid_2d=None,
+    val_2d=None,
+    phase_val_y=None,
+):
+    per_phase_accuracy = []
+    phase_labels = []
+    true_labels = []
+    for phase_idx, (phase_val_X, phase_val_y) in enumerate(phase_holdouts):
+        phase_preds = predict_fn(phase_val_X)
+        per_phase_accuracy.append(float(np.mean(phase_preds == phase_val_y)))
+        phase_labels.append(phase_idx)
+        true_labels.append(np.asarray(phase_val_y))
+
+    payload = {
+        "phase_accuracy": np.asarray(per_phase_accuracy, dtype=float),
+        "phase_labels": np.asarray(phase_labels, dtype=int),
+        "true_labels": (
+            np.asarray(phase_val_y, dtype=int)
+            if phase_val_y is not None
+            else np.concatenate(true_labels) if true_labels else np.asarray([], dtype=int)
+        ),
+    }
+
+    if pca is not None and xx is not None and grid_2d is not None and model is not None:
+        payload["boundary_grid"] = boundary.compute_boundary(
+            pca,
+            xx,
+            grid_2d,
+            lambda X: predict_fn(X),
+        )
+
+    if val_2d is not None:
+        payload["val_2d"] = val_2d
+
+    return payload
 
 
 def run_standard_training(model_family):
@@ -88,6 +133,8 @@ def run_standard_training(model_family):
                     "boundary_grid": boundary_grid,
                     "feature_importances": feature_importances,
                     "error_cluster_labels": error_cluster_labels,
+                    "true_labels": y_val,
+                    "val_2d": X_val_2d,
                 },
             )
 
@@ -96,6 +143,121 @@ def run_standard_training(model_family):
     else:
         train_random_forest(X_train, y_train, X_val, y_val, step_callback=on_step)
 
+    print(f"done. run_id={run_id}")
+
+
+def run_continual_training():
+    db.init_db()
+
+    run_id = str(uuid.uuid4())
+    phase_data = continual.prepare_continual_dataset()
+
+    db.create_run(
+        run_id=run_id,
+        model_family="mlp",
+        mode="continual",
+        dataset_name=continual.DATASET_NAME,
+        config_snapshot={
+            "MAX_EPOCHS": config.MAX_EPOCHS,
+            "SNAPSHOT_DENSE_STEPS": config.SNAPSHOT_DENSE_STEPS,
+            "SNAPSHOT_EVERY_N": config.SNAPSHOT_EVERY_N,
+            "PCA_COMPONENTS": config.PCA_COMPONENTS,
+            "GRID_RESOLUTION": config.GRID_RESOLUTION,
+        },
+    )
+
+    pca, X_val_2d = boundary.fit_projection(np.concatenate([phase[1] for phase in phase_data]))
+    xx, yy, grid_2d = boundary.build_grid(X_val_2d)
+    logger.save_run_meta(
+        run_id,
+        grid_xx=xx,
+        grid_yy=yy,
+        val_2d=X_val_2d,
+        val_true_labels=np.concatenate([phase[3] for phase in phase_data]),
+    )
+
+    all_phase_val_X = np.concatenate([phase[1] for phase in phase_data])
+    phase_holdouts = []
+    for phase in phase_data:
+        phase_holdouts.append((phase[1], phase[3]))
+
+    def on_step(
+        step=None,
+        epoch=None,
+        train_accuracy=None,
+        val_accuracy=None,
+        val_predictions=None,
+        val_confidences=None,
+        model=None,
+        phase_id=None,
+        phase_val_X=None,
+        phase_val_y=None,
+    ):
+        current_step = step if step is not None else epoch
+        print(f"step {current_step:3d}  train_acc={train_accuracy:.4f}  val_acc={val_accuracy:.4f}")
+        if logger.should_log_step(current_step):
+            payload = build_continual_snapshot_payload(
+                phase_holdouts=phase_holdouts,
+                model=model,
+                predict_fn=lambda X: mlp_predict(model, X),
+                phase_index=phase_id - 1 if phase_id is not None else 0,
+                pca=pca,
+                xx=xx,
+                grid_2d=grid_2d,
+                val_2d=pca.transform(phase_val_X) if phase_val_X is not None else None,
+                phase_val_y=phase_val_y,
+            )
+            logger.save_snapshot(
+                run_id=run_id,
+                step=current_step,
+                train_accuracy=train_accuracy,
+                val_accuracy=val_accuracy,
+                predictions=val_predictions,
+                confidences=val_confidences,
+                extra_arrays=payload,
+                phase_id=phase_id,
+            )
+
+    phase_counter = 0
+    for phase_index, (X_train, X_val, y_train, y_val, phase_classes) in enumerate(phase_data):
+        phase_counter += 1
+        phase_epochs = max(1, config.MAX_EPOCHS // len(phase_data))
+
+        def phase_callback(
+            epoch,
+            train_accuracy,
+            val_accuracy,
+            val_predictions,
+            val_confidences,
+            model,
+            phase_index=phase_index,
+            phase_val_X=X_val,
+            phase_val_y=y_val,
+        ):
+            current_step = (phase_index * phase_epochs) + epoch
+            on_step(
+                step=current_step,
+                train_accuracy=train_accuracy,
+                val_accuracy=val_accuracy,
+                val_predictions=val_predictions,
+                val_confidences=val_confidences,
+                model=model,
+                phase_id=phase_index + 1,
+                phase_val_X=phase_val_X,
+                phase_val_y=phase_val_y,
+            )
+
+        train_mlp(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            max_epochs=phase_epochs,
+            epoch_callback=phase_callback,
+        )
+
+    events = forgetting_events(run_id)
+    db.save_forgetting_events(run_id, events)
     print(f"done. run_id={run_id}")
 
 
@@ -112,6 +274,8 @@ def main():
     if args.command == "train":
         if args.mode == "standard" and args.model_family in {"mlp", "random_forest"}:
             run_standard_training(args.model_family)
+        elif args.mode == "continual" and args.model_family == "mlp":
+            run_continual_training()
         else:
             raise NotImplementedError(
                 f"train {args.mode} {args.model_family} isn't implemented yet"

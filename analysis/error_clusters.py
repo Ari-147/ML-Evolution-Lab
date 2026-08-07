@@ -17,6 +17,12 @@ def compute_error_clusters(val_2d, true_labels, predictions, min_samples=3):
     true_labels = np.asarray(true_labels)
     predictions = np.asarray(predictions)
 
+    if len(true_labels) != len(predictions):
+        common_length = min(len(true_labels), len(predictions))
+        true_labels = true_labels[:common_length]
+        predictions = predictions[:common_length]
+        val_2d = val_2d[:common_length]
+
     error_mask = predictions != true_labels
     labels = np.full(len(true_labels), -1, dtype=int)
 
