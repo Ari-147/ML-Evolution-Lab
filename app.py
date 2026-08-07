@@ -4,6 +4,7 @@ import streamlit as st
 
 import storage.db as db
 import snapshotting.logger as logger
+from analysis.error_clusters import compute_error_clusters
 
 st.set_page_config(page_title="ML Evolution Lab", layout="wide")
 st.title("ML Evolution Lab")
@@ -83,6 +84,13 @@ with col_boundary:
     boundary_grid = step_data["boundary_grid"]
     val_2d = meta["val_2d"]
     val_true_labels = meta["val_true_labels"]
+    error_cluster_labels = step_data.get("error_cluster_labels")
+    if error_cluster_labels is None:
+        error_cluster_labels = compute_error_clusters(
+            val_2d,
+            val_true_labels,
+            step_data["predictions"],
+        )
 
     fig = go.Figure()
     fig.add_trace(
@@ -97,24 +105,52 @@ with col_boundary:
             hoverinfo="skip",
         )
     )
+    error_mask = step_data["predictions"] != val_true_labels
+    misclassified_points = val_2d[error_mask]
+    misclassified_cluster_ids = error_cluster_labels[error_mask]
     fig.add_trace(
         go.Scatter(
-            x=val_2d[:, 0],
-            y=val_2d[:, 1],
+            x=misclassified_points[:, 0],
+            y=misclassified_points[:, 1],
             mode="markers",
             marker=dict(
-                color=val_true_labels,
-                colorscale="RdBu",
-                size=6,
+                color=misclassified_cluster_ids,
+                colorscale="Viridis",
+                size=8,
                 line=dict(width=0.5, color="black"),
             ),
-            name="val points (true label)",
+            name="misclassified points",
         )
     )
     fig.update_layout(
         xaxis_title="PC1", yaxis_title="PC2", height=500, margin=dict(t=20)
     )
     st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Error cluster trend")
+    cluster_counts = []
+    trend_steps = []
+    for _, step_value, _, _, npz_path, _ in snapshots:
+        try:
+            snapshot_values = logger.load_snapshot(npz_path)
+        except FileNotFoundError:
+            continue
+        labels = snapshot_values.get("error_cluster_labels")
+        if labels is None:
+            continue
+        non_negative = labels[labels >= 0]
+        cluster_counts.append(len(np.unique(non_negative)))
+        trend_steps.append(step_value)
+    if trend_steps:
+        trend_fig = go.Figure()
+        trend_fig.add_trace(go.Scatter(x=trend_steps, y=cluster_counts, mode="lines+markers"))
+        trend_fig.update_layout(
+            xaxis_title="step",
+            yaxis_title="distinct error clusters",
+            height=300,
+            margin=dict(t=20),
+        )
+        st.plotly_chart(trend_fig, width="stretch")
 
 # Panel 2: Confidence Distribution
 with col_conf:

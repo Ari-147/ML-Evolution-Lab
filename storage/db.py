@@ -42,6 +42,17 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS error_clusters (
+            run_id TEXT NOT NULL,
+            step INTEGER NOT NULL,
+            cluster_id INTEGER NOT NULL,
+            member_example_ids TEXT NOT NULL,
+            PRIMARY KEY (run_id, step, cluster_id)
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -104,3 +115,25 @@ def create_snapshot(run_id, step, train_accuracy, val_accuracy, npz_path, phase_
     snapshot_id = cur.lastrowid
     conn.close()
     return snapshot_id
+
+
+def save_error_clusters(run_id, step, clusters):
+    conn = get_connection()
+    conn.execute("DELETE FROM error_clusters WHERE run_id = ? AND step = ?", (run_id, step))
+    for cluster_id, members in clusters.items():
+        conn.execute(
+            "INSERT INTO error_clusters (run_id, step, cluster_id, member_example_ids) VALUES (?, ?, ?, ?)",
+            (run_id, step, cluster_id, json.dumps(members)),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_error_clusters(run_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT step, cluster_id, member_example_ids FROM error_clusters WHERE run_id = ? ORDER BY step, cluster_id",
+        (run_id,),
+    ).fetchall()
+    conn.close()
+    return rows

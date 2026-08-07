@@ -1,10 +1,13 @@
 import argparse
 import uuid
 
+import numpy as np
+
 import config
 import storage.db as db
 import snapshotting.logger as logger
 import snapshotting.boundary as boundary
+from analysis.error_clusters import compute_error_clusters
 from analysis.feature_importance import compute_feature_importance
 from presets import standard
 from training.mlp_harness import train_mlp, predict as mlp_predict
@@ -63,6 +66,17 @@ def run_standard_training(model_family):
                 random_state=42,
                 predict_fn=(lambda X: mlp_predict(model, X)) if model_family == "mlp" else None,
             )
+            error_cluster_labels = compute_error_clusters(
+                X_val_2d,
+                y_val,
+                val_predictions,
+            )
+            cluster_groups = {}
+            for cluster_id in np.unique(error_cluster_labels[error_cluster_labels >= 0]):
+                cluster_groups[int(cluster_id)] = [
+                    int(idx) for idx, label in enumerate(error_cluster_labels) if label == int(cluster_id)
+                ]
+            db.save_error_clusters(run_id, current_step, cluster_groups)
             logger.save_snapshot(
                 run_id=run_id,
                 step=current_step,
@@ -73,6 +87,7 @@ def run_standard_training(model_family):
                 extra_arrays={
                     "boundary_grid": boundary_grid,
                     "feature_importances": feature_importances,
+                    "error_cluster_labels": error_cluster_labels,
                 },
             )
 
