@@ -185,6 +185,63 @@ if trend_steps:
     )
     st.plotly_chart(trend_fig, width="stretch")
 
+# Fairness Mode Specific Panels
+if mode == "fairness":
+    st.divider()
+    st.header("Fairness Analysis")
+
+    fairness_metrics = []
+    fairness_steps = []
+    for _, step_value, _, _, npz_path, _ in snapshots:
+        try:
+            snapshot_values = logger.load_snapshot(npz_path)
+        except FileNotFoundError:
+            continue
+        subgroup_values = snapshot_values.get("subgroup_metrics")
+        subgroup_accuracy = snapshot_values.get("subgroup_accuracy")
+        subgroup_positive_rate = snapshot_values.get("subgroup_positive_rate")
+        if subgroup_values is None or subgroup_accuracy is None or subgroup_positive_rate is None:
+            continue
+        fairness_metrics.append((step_value, subgroup_values, subgroup_accuracy, subgroup_positive_rate))
+        fairness_steps.append(step_value)
+
+    if fairness_metrics:
+        subgroup_names = sorted({str(value) for _, subgroup_values, _, _ in fairness_metrics for value in subgroup_values})
+        if subgroup_names:
+            accuracy_fig = go.Figure()
+            positive_rate_fig = go.Figure()
+            for subgroup_name in subgroup_names:
+                accuracy_points = []
+                positive_points = []
+                for step_value, subgroup_values, subgroup_accuracy, subgroup_positive_rate in fairness_metrics:
+                    subgroup_index = None
+                    for idx, value in enumerate(subgroup_values):
+                        if str(value) == subgroup_name:
+                            subgroup_index = idx
+                            break
+                    if subgroup_index is None:
+                        continue
+                    accuracy_points.append((step_value, float(subgroup_accuracy[subgroup_index])))
+                    positive_points.append((step_value, float(subgroup_positive_rate[subgroup_index])))
+                if accuracy_points:
+                    x_values = [point[0] for point in accuracy_points]
+                    y_values = [point[1] for point in accuracy_points]
+                    accuracy_fig.add_trace(go.Scatter(x=x_values, y=y_values, mode="lines+markers", name=subgroup_name))
+                if positive_points:
+                    x_values = [point[0] for point in positive_points]
+                    y_values = [point[1] for point in positive_points]
+                    positive_rate_fig.add_trace(go.Scatter(x=x_values, y=y_values, mode="lines+markers", name=subgroup_name))
+            if len(accuracy_fig.data) > 0:
+                accuracy_fig.update_layout(xaxis_title="step", yaxis_title="accuracy", height=300, margin=dict(t=20))
+                st.subheader("Per-subgroup accuracy")
+                st.plotly_chart(accuracy_fig, width="stretch")
+            if len(positive_rate_fig.data) > 0:
+                positive_rate_fig.update_layout(xaxis_title="step", yaxis_title="positive prediction rate", height=300, margin=dict(t=20))
+                st.subheader("Per-subgroup positive rate")
+                st.plotly_chart(positive_rate_fig, width="stretch")
+    else:
+        st.info("No subgroup fairness metrics recorded for this run yet.")
+
 # Continual Mode Specific Panels
 if mode == "continual":
     st.divider()

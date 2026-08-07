@@ -64,6 +64,19 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subgroup_metrics (
+            run_id TEXT NOT NULL,
+            step INTEGER NOT NULL,
+            subgroup_value TEXT NOT NULL,
+            accuracy REAL NOT NULL,
+            avg_confidence REAL NOT NULL,
+            positive_rate REAL NOT NULL,
+            PRIMARY KEY (run_id, step, subgroup_value)
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -166,6 +179,35 @@ def list_forgetting_events(run_id):
     conn = get_connection()
     rows = conn.execute(
         "SELECT step, example_id, transition FROM forgetting_events WHERE run_id = ? ORDER BY step, example_id",
+        (run_id,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def save_subgroup_metrics(run_id, step, metrics):
+    conn = get_connection()
+    conn.execute("DELETE FROM subgroup_metrics WHERE run_id = ? AND step = ?", (run_id, step))
+    for metric in metrics:
+        conn.execute(
+            "INSERT INTO subgroup_metrics (run_id, step, subgroup_value, accuracy, avg_confidence, positive_rate) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                step,
+                metric["subgroup_value"],
+                metric["accuracy"],
+                metric["avg_confidence"],
+                metric["positive_rate"],
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_subgroup_metrics(run_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT step, subgroup_value, accuracy, avg_confidence, positive_rate FROM subgroup_metrics WHERE run_id = ? ORDER BY step, subgroup_value",
         (run_id,),
     ).fetchall()
     conn.close()
