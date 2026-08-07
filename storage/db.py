@@ -53,6 +53,17 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS forgetting_events (
+            run_id TEXT NOT NULL,
+            step INTEGER NOT NULL,
+            example_id INTEGER NOT NULL,
+            transition TEXT NOT NULL,
+            PRIMARY KEY (run_id, step, example_id)
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -133,6 +144,28 @@ def list_error_clusters(run_id):
     conn = get_connection()
     rows = conn.execute(
         "SELECT step, cluster_id, member_example_ids FROM error_clusters WHERE run_id = ? ORDER BY step, cluster_id",
+        (run_id,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def save_forgetting_events(run_id, events):
+    conn = get_connection()
+    conn.execute("DELETE FROM forgetting_events WHERE run_id = ?", (run_id,))
+    for step, example_id, transition in events:
+        conn.execute(
+            "INSERT INTO forgetting_events (run_id, step, example_id, transition) VALUES (?, ?, ?, ?)",
+            (run_id, step, example_id, transition),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_forgetting_events(run_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT step, example_id, transition FROM forgetting_events WHERE run_id = ? ORDER BY step, example_id",
         (run_id,),
     ).fetchall()
     conn.close()

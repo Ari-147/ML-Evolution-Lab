@@ -29,13 +29,21 @@ def train_mlp(X_train, y_train, X_val, y_val, max_epochs=None, lr=1e-3, epoch_ca
     val_predictions, val_confidences, model) for snapshotting."""
     max_epochs = max_epochs or config.MAX_EPOCHS
 
-    X_train_t = torch.tensor(X_train, dtype=torch.float32)
-    y_train_t = torch.tensor(y_train, dtype=torch.long)
-    X_val_t = torch.tensor(X_val, dtype=torch.float32)
-    y_val_t = torch.tensor(y_val, dtype=torch.long)
+    unique_labels = np.unique(y_train)
+    label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
+    index_to_label = {idx: label for idx, label in enumerate(unique_labels)}
 
-    n_classes = len(np.unique(y_train))
+    X_train_t = torch.tensor(X_train, dtype=torch.float32)
+    y_train_mapped = np.array([label_to_index[label] for label in y_train], dtype=int)
+    y_train_t = torch.tensor(y_train_mapped, dtype=torch.long)
+    X_val_t = torch.tensor(X_val, dtype=torch.float32)
+    y_val_mapped = np.array([label_to_index[label] for label in y_val], dtype=int)
+    y_val_t = torch.tensor(y_val_mapped, dtype=torch.long)
+
+    n_classes = len(unique_labels)
     model = MLP(input_dim=X_train.shape[1], n_classes=n_classes)
+    model.label_to_index = label_to_index
+    model.index_to_label = index_to_label
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
@@ -59,11 +67,12 @@ def train_mlp(X_train, y_train, X_val, y_val, max_epochs=None, lr=1e-3, epoch_ca
             val_accuracy = (val_preds == y_val_t).float().mean().item()
 
         if epoch_callback is not None:
+            val_predictions_original = np.array([index_to_label[int(pred)] for pred in val_preds.numpy()], dtype=int)
             epoch_callback(
                 epoch=epoch,
                 train_accuracy=train_accuracy,
                 val_accuracy=val_accuracy,
-                val_predictions=val_preds.numpy(),
+                val_predictions=val_predictions_original,
                 val_confidences=val_confidences.numpy(),
                 model=model,
             )
@@ -77,4 +86,7 @@ def predict(model, X):
     model.eval()
     with torch.no_grad():
         X_t = torch.tensor(X, dtype=torch.float32)
-        return model(X_t).argmax(dim=1).numpy()
+        predicted_indices = model(X_t).argmax(dim=1).numpy()
+    if hasattr(model, "index_to_label"):
+        return np.array([model.index_to_label[int(idx)] for idx in predicted_indices], dtype=int)
+    return predicted_indices
