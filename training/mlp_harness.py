@@ -26,7 +26,7 @@ def train_mlp(X_train, y_train, X_val, y_val, max_epochs=None, lr=1e-3, epoch_ca
     """Full-batch training loop. After every epoch, computes train/val
     accuracy plus per-example val predictions and softmax confidence,
     and hands them to epoch_callback(epoch, train_accuracy, val_accuracy,
-    val_predictions, val_confidences) for snapshotting."""
+    val_predictions, val_confidences, model) for snapshotting."""
     max_epochs = max_epochs or config.MAX_EPOCHS
 
     X_train_t = torch.tensor(X_train, dtype=torch.float32)
@@ -65,6 +65,16 @@ def train_mlp(X_train, y_train, X_val, y_val, max_epochs=None, lr=1e-3, epoch_ca
                 val_accuracy=val_accuracy,
                 val_predictions=val_preds.numpy(),
                 val_confidences=val_confidences.numpy(),
+                model=model,
             )
 
     return model
+
+
+def predict(model, X):
+    """Predicted class ids for arbitrary points in original feature
+    space (used for decision-boundary grid evaluation)."""
+    model.eval()
+    with torch.no_grad():
+        X_t = torch.tensor(X, dtype=torch.float32)
+        return model(X_t).argmax(dim=1).numpy()

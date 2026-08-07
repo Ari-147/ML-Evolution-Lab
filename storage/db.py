@@ -64,6 +64,27 @@ def create_run(run_id, model_family, mode, dataset_name, config_snapshot):
     conn.close()
 
 
+def list_runs():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT run_id, model_family, mode, dataset_name, created_at "
+        "FROM runs ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def list_snapshots(run_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT snapshot_id, step, train_accuracy, val_accuracy, npz_path, phase_id "
+        "FROM snapshots WHERE run_id = ? ORDER BY step",
+        (run_id,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 def create_snapshot(run_id, step, train_accuracy, val_accuracy, npz_path, phase_id=None):
     conn = get_connection()
     cur = conn.execute(

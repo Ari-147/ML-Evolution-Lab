@@ -47,3 +47,23 @@ def save_snapshot(
         npz_path=npz_path,
         phase_id=phase_id,
     )
+
+
+def save_run_meta(run_id, **arrays):
+    """Arrays that are fixed for the whole run (PCA grid coordinates,
+    the 2D-projected val points, true val labels) — saved once instead
+    of duplicated into every per-step .npz."""
+    snapshot_dir = os.path.join(config.SNAPSHOT_DIR, run_id)
+    os.makedirs(snapshot_dir, exist_ok=True)
+    meta_path = os.path.join(snapshot_dir, "meta.npz")
+    np.savez(meta_path, **arrays)
+    return meta_path
+
+
+def load_run_meta(run_id):
+    meta_path = os.path.join(config.SNAPSHOT_DIR, run_id, "meta.npz")
+    return np.load(meta_path)
+
+
+def load_snapshot(npz_path):
+    return np.load(npz_path)

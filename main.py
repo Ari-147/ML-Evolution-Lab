@@ -4,8 +4,9 @@ import uuid
 import config
 import storage.db as db
 import snapshotting.logger as logger
+import snapshotting.boundary as boundary
 from presets import standard
-from training.mlp_harness import train_mlp
+from training.mlp_harness import train_mlp, predict
 
 
 def run_standard_mlp():
@@ -23,12 +24,29 @@ def run_standard_mlp():
             "MAX_EPOCHS": config.MAX_EPOCHS,
             "SNAPSHOT_DENSE_STEPS": config.SNAPSHOT_DENSE_STEPS,
             "SNAPSHOT_EVERY_N": config.SNAPSHOT_EVERY_N,
+            "PCA_COMPONENTS": config.PCA_COMPONENTS,
+            "GRID_RESOLUTION": config.GRID_RESOLUTION,
         },
     )
 
-    def on_epoch(epoch, train_accuracy, val_accuracy, val_predictions, val_confidences):
+    # Fixed PCA projection + grid for the whole run, so boundary movement
+    # across steps is comparable. Saved once as run-level metadata.
+    pca, X_val_2d = boundary.fit_projection(X_val)
+    xx, yy, grid_2d = boundary.build_grid(X_val_2d)
+    logger.save_run_meta(
+        run_id,
+        grid_xx=xx,
+        grid_yy=yy,
+        val_2d=X_val_2d,
+        val_true_labels=y_val,
+    )
+
+    def on_epoch(epoch, train_accuracy, val_accuracy, val_predictions, val_confidences, model):
         print(f"epoch {epoch:3d}  train_acc={train_accuracy:.4f}  val_acc={val_accuracy:.4f}")
         if logger.should_log_step(epoch):
+            boundary_grid = boundary.compute_boundary(
+                pca, xx, grid_2d, lambda X: predict(model, X)
+            )
             logger.save_snapshot(
                 run_id=run_id,
                 step=epoch,
@@ -36,6 +54,7 @@ def run_standard_mlp():
                 val_accuracy=val_accuracy,
                 predictions=val_predictions,
                 confidences=val_confidences,
+                extra_arrays={"boundary_grid": boundary_grid},
             )
 
     train_mlp(X_train, y_train, X_val, y_val, epoch_callback=on_epoch)
@@ -58,7 +77,7 @@ def main():
         else:
             raise NotImplementedError(
                 f"train {args.mode} {args.model_family} isn't implemented yet "
-                "(phase 1 only covers standard mlp)"
+                "(phase 1-2 only cover standard mlp)"
             )
 
 
