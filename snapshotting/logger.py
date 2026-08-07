@@ -1,5 +1,4 @@
 import os
-
 import numpy as np
 
 import config
@@ -32,7 +31,7 @@ def save_snapshot(
     os.makedirs(snapshot_dir, exist_ok=True)
     npz_path = os.path.join(snapshot_dir, f"step_{step}.npz")
 
-    np.savez(
+    np.savez_compressed(
         npz_path,
         predictions=np.asarray(predictions),
         confidences=np.asarray(confidences),
@@ -56,14 +55,31 @@ def save_run_meta(run_id, **arrays):
     snapshot_dir = os.path.join(config.SNAPSHOT_DIR, run_id)
     os.makedirs(snapshot_dir, exist_ok=True)
     meta_path = os.path.join(snapshot_dir, "meta.npz")
-    np.savez(meta_path, **arrays)
+    np.savez_compressed(meta_path, **arrays)
     return meta_path
 
 
 def load_run_meta(run_id):
-    meta_path = os.path.join(config.SNAPSHOT_DIR, run_id, "meta.npz")
-    return np.load(meta_path)
+    """Loads metadata array dictionary. Raises a clean FileNotFoundError
+    if the run folder or meta.npz is missing."""
+    snapshot_dir = os.path.join(config.SNAPSHOT_DIR, run_id)
+    meta_path = os.path.join(snapshot_dir, "meta.npz")
+
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(
+            f"Run metadata file does not exist at: {meta_path}. "
+            "Ensure save_run_meta() was executed during training."
+        )
+
+    # Returning a dict unlinks the file handle immediately, avoiding open file leaks
+    with np.load(meta_path) as data:
+        return {key: data[key] for key in data.files}
 
 
 def load_snapshot(npz_path):
-    return np.load(npz_path)
+    """Loads a single step snapshot safely."""
+    if not os.path.exists(npz_path):
+        raise FileNotFoundError(f"Snapshot array not found at: {npz_path}")
+
+    with np.load(npz_path) as data:
+        return {key: data[key] for key in data.files}
