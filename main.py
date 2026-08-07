@@ -5,11 +5,13 @@ import config
 import storage.db as db
 import snapshotting.logger as logger
 import snapshotting.boundary as boundary
+from analysis.feature_importance import compute_feature_importance
 from presets import standard
-from training.mlp_harness import train_mlp, predict
+from training.mlp_harness import train_mlp, predict as mlp_predict
+from training.rf_harness import train_random_forest
 
 
-def run_standard_mlp():
+def run_standard_training(model_family):
     db.init_db()
 
     run_id = str(uuid.uuid4())
@@ -17,11 +19,13 @@ def run_standard_mlp():
 
     db.create_run(
         run_id=run_id,
-        model_family="mlp",
+        model_family=model_family,
         mode="standard",
         dataset_name=standard.DATASET_NAME,
         config_snapshot={
             "MAX_EPOCHS": config.MAX_EPOCHS,
+            "MAX_TREES": config.MAX_TREES,
+            "TREES_PER_STEP": config.TREES_PER_STEP,
             "SNAPSHOT_DENSE_STEPS": config.SNAPSHOT_DENSE_STEPS,
             "SNAPSHOT_EVERY_N": config.SNAPSHOT_EVERY_N,
             "PCA_COMPONENTS": config.PCA_COMPONENTS,
@@ -29,8 +33,6 @@ def run_standard_mlp():
         },
     )
 
-    # Fixed PCA projection + grid for the whole run, so boundary movement
-    # across steps is comparable. Saved once as run-level metadata.
     pca, X_val_2d = boundary.fit_projection(X_val)
     xx, yy, grid_2d = boundary.build_grid(X_val_2d)
     logger.save_run_meta(
@@ -41,23 +43,44 @@ def run_standard_mlp():
         val_true_labels=y_val,
     )
 
-    def on_epoch(epoch, train_accuracy, val_accuracy, val_predictions, val_confidences, model):
-        print(f"epoch {epoch:3d}  train_acc={train_accuracy:.4f}  val_acc={val_accuracy:.4f}")
-        if logger.should_log_step(epoch):
+    def predict_for_model(model, X):
+        if model_family == "mlp":
+            return mlp_predict(model, X)
+        return model.predict(X)
+
+    def on_step(step=None, epoch=None, train_accuracy=None, val_accuracy=None, val_predictions=None, val_confidences=None, model=None):
+        current_step = step if step is not None else epoch
+        print(f"step {current_step:3d}  train_acc={train_accuracy:.4f}  val_acc={val_accuracy:.4f}")
+        if logger.should_log_step(current_step):
             boundary_grid = boundary.compute_boundary(
-                pca, xx, grid_2d, lambda X: predict(model, X)
+                pca, xx, grid_2d, lambda X: predict_for_model(model, X)
+            )
+            feature_importances = compute_feature_importance(
+                model=model,
+                X=X_val,
+                y=y_val,
+                n_repeats=config.PERMUTATION_N_REPEATS,
+                random_state=42,
+                predict_fn=(lambda X: mlp_predict(model, X)) if model_family == "mlp" else None,
             )
             logger.save_snapshot(
                 run_id=run_id,
-                step=epoch,
+                step=current_step,
                 train_accuracy=train_accuracy,
                 val_accuracy=val_accuracy,
                 predictions=val_predictions,
                 confidences=val_confidences,
-                extra_arrays={"boundary_grid": boundary_grid},
+                extra_arrays={
+                    "boundary_grid": boundary_grid,
+                    "feature_importances": feature_importances,
+                },
             )
 
-    train_mlp(X_train, y_train, X_val, y_val, epoch_callback=on_epoch)
+    if model_family == "mlp":
+        train_mlp(X_train, y_train, X_val, y_val, epoch_callback=on_step)
+    else:
+        train_random_forest(X_train, y_train, X_val, y_val, step_callback=on_step)
+
     print(f"done. run_id={run_id}")
 
 
@@ -72,12 +95,11 @@ def main():
     args = parser.parse_args()
 
     if args.command == "train":
-        if args.mode == "standard" and args.model_family == "mlp":
-            run_standard_mlp()
+        if args.mode == "standard" and args.model_family in {"mlp", "random_forest"}:
+            run_standard_training(args.model_family)
         else:
             raise NotImplementedError(
-                f"train {args.mode} {args.model_family} isn't implemented yet "
-                "(phase 1-2 only cover standard mlp)"
+                f"train {args.mode} {args.model_family} isn't implemented yet"
             )
 
 

@@ -8,10 +8,9 @@ import snapshotting.logger as logger
 st.set_page_config(page_title="ML Evolution Lab", layout="wide")
 st.title("ML Evolution Lab")
 
-# 1. Fetch available runs from DB
 runs = db.list_runs()
 if not runs:
-    st.warning("No runs found yet. Run `python main.py train standard mlp` first.")
+    st.warning("No runs found yet. Run `python main.py train standard mlp` or `python main.py train standard random_forest` first.")
     st.stop()
 
 run_labels = {
@@ -38,8 +37,7 @@ if not snapshots:
 steps = [row[1] for row in snapshots]
 snapshot_by_step = {row[1]: row for row in snapshots}
 
-# Time scrubber slider
-step = st.select_slider("Step (epoch)", options=steps, value=steps[0])
+step = st.select_slider("Step", options=steps, value=steps[0])
 snapshot_id, step, train_accuracy, val_accuracy, npz_path, phase_id = snapshot_by_step[step]
 
 try:
@@ -48,10 +46,24 @@ except FileNotFoundError:
     st.error(f"Snapshot array file not found at path: `{npz_path}`")
     st.stop()
 
-# Metrics
 col_train, col_val = st.columns(2)
 col_train.metric("Train accuracy", f"{train_accuracy:.4f}")
 col_val.metric("Val accuracy", f"{val_accuracy:.4f}")
+
+st.subheader("Feature importance")
+feature_importances = step_data.get("feature_importances")
+if feature_importances is None:
+    st.info("This run does not have feature-importance data yet.")
+else:
+    feature_names = [f"Feature {i + 1}" for i in range(len(feature_importances))]
+    fig_importance = go.Figure(go.Bar(x=feature_names, y=feature_importances))
+    fig_importance.update_layout(
+        xaxis_title="feature",
+        yaxis_title="importance",
+        height=350,
+        margin=dict(t=20),
+    )
+    st.plotly_chart(fig_importance, width="stretch")
 
 col_boundary, col_conf = st.columns(2)
 
