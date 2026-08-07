@@ -82,7 +82,6 @@ Then open the provided local URL in your browser.
 ```text
 ML-Evolution-Lab/
 ├── README.md
-├── CLAUDE.md
 ├── requirements.txt
 ├── config.py
 ├── main.py
