@@ -10,7 +10,8 @@ import snapshotting.boundary as boundary
 from analysis.error_clusters import compute_error_clusters
 from analysis.feature_importance import compute_feature_importance
 from analysis.forgetting import forgetting_events
-from presets import standard, continual
+from presets import standard, continual, fairness
+from analysis.fairness_metrics import compute_subgroup_metrics
 from training.mlp_harness import train_mlp, predict as mlp_predict
 from training.rf_harness import train_random_forest
 
@@ -146,6 +147,81 @@ def run_standard_training(model_family):
     print(f"done. run_id={run_id}")
 
 
+def run_fairness_training(model_family):
+    db.init_db()
+
+    run_id = str(uuid.uuid4())
+    dataset = fairness.prepare_fairness_dataset()
+
+    db.create_run(
+        run_id=run_id,
+        model_family=model_family,
+        mode="fairness",
+        dataset_name=fairness.DATASET_NAME,
+        config_snapshot={
+            "MAX_EPOCHS": config.MAX_EPOCHS,
+            "SNAPSHOT_DENSE_STEPS": config.SNAPSHOT_DENSE_STEPS,
+            "SNAPSHOT_EVERY_N": config.SNAPSHOT_EVERY_N,
+            "PCA_COMPONENTS": config.PCA_COMPONENTS,
+            "GRID_RESOLUTION": config.GRID_RESOLUTION,
+        },
+    )
+
+    pca, X_val_2d = boundary.fit_projection(dataset["X_val"])
+    xx, yy, grid_2d = boundary.build_grid(X_val_2d)
+    logger.save_run_meta(
+        run_id,
+        grid_xx=xx,
+        grid_yy=yy,
+        val_2d=X_val_2d,
+        val_true_labels=dataset["y_val"],
+    )
+
+    def predict_for_model(model, X):
+        if model_family == "mlp":
+            return mlp_predict(model, X)
+        return model.predict(X)
+
+    def on_step(step=None, epoch=None, train_accuracy=None, val_accuracy=None, val_predictions=None, val_confidences=None, model=None):
+        current_step = step if step is not None else epoch
+        print(f"step {current_step:3d}  train_acc={train_accuracy:.4f}  val_acc={val_accuracy:.4f}")
+        if logger.should_log_step(current_step):
+            boundary_grid = boundary.compute_boundary(
+                pca, xx, grid_2d, lambda X: predict_for_model(model, X)
+            )
+            subgroup_metrics = compute_subgroup_metrics(
+                dataset["subgroup_val"],
+                val_predictions,
+                val_confidences,
+                dataset["y_val"],
+            )
+            db.save_subgroup_metrics(run_id, current_step, subgroup_metrics)
+            logger.save_snapshot(
+                run_id=run_id,
+                step=current_step,
+                train_accuracy=train_accuracy,
+                val_accuracy=val_accuracy,
+                predictions=val_predictions,
+                confidences=val_confidences,
+                extra_arrays={
+                    "boundary_grid": boundary_grid,
+                    "true_labels": dataset["y_val"],
+                    "val_2d": X_val_2d,
+                    "subgroup_metrics": np.asarray([metric["subgroup_value"] for metric in subgroup_metrics], dtype=object),
+                    "subgroup_accuracy": np.asarray([metric["accuracy"] for metric in subgroup_metrics], dtype=float),
+                    "subgroup_positive_rate": np.asarray([metric["positive_rate"] for metric in subgroup_metrics], dtype=float),
+                    "subgroup_avg_confidence": np.asarray([metric["avg_confidence"] for metric in subgroup_metrics], dtype=float),
+                },
+            )
+
+    if model_family == "mlp":
+        train_mlp(dataset["X_train"], dataset["y_train"], dataset["X_val"], dataset["y_val"], epoch_callback=on_step)
+    else:
+        train_random_forest(dataset["X_train"], dataset["y_train"], dataset["X_val"], dataset["y_val"], step_callback=on_step)
+
+    print(f"done. run_id={run_id}")
+
+
 def run_continual_training():
     db.init_db()
 
@@ -276,6 +352,8 @@ def main():
             run_standard_training(args.model_family)
         elif args.mode == "continual" and args.model_family == "mlp":
             run_continual_training()
+        elif args.mode == "fairness" and args.model_family in {"mlp", "random_forest"}:
+            run_fairness_training(args.model_family)
         else:
             raise NotImplementedError(
                 f"train {args.mode} {args.model_family} isn't implemented yet"
